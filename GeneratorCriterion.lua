@@ -1,13 +1,13 @@
 
 local GeneratorCriterion, parent = torch.class('GeneratorCriterion', 'nn.Criterion') -- heritage en torch
 
-function GeneratorCriterion:__init() -- constructeur
+function GeneratorCriterion:__init()
    -- equivalent a parent.__init(self)
    self.gradInput = torch.Tensor()
    self.output = 0
 end
 
-function GeneratorCriterion:forward(input) -- appel generique pour calculer le cout
+function GeneratorCriterion:forward(input)
    return self:updateOutput(input)
 end
 
@@ -23,7 +23,7 @@ function GeneratorCriterion:updateOutput(input)
    return self.output/n_batch
 end
 
-function GeneratorCriterion:backward(input) -- appel generique pour calculer le gradient du cout
+function GeneratorCriterion:backward(input)
    return self:updateGradInput(input)
 end
 
@@ -35,5 +35,5 @@ function GeneratorCriterion:updateGradInput(input)
 
    self.gradInput = torch.cdiv(torch.ones(n_batch,1), input)
 
-   return self.gradInput
+   return self.gradInput/n_batch
 end

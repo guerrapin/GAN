@@ -22,7 +22,6 @@ function DiscriminatorCriterion:updateOutput(inputReal, inputFake)
 
    local n_batch = inputReal:size()[1]
    self.output = 0
-
    self.output = torch.sum(torch.log(inputReal) + torch.log(1 - inputFake))
 
    return self.output/n_batch
@@ -44,7 +43,7 @@ function DiscriminatorCriterion:updateGradInput(inputReal, inputFake)
    self.gradInputFake = torch.Tensor(n_batch,1)
 
    self.gradInputReal = torch.cdiv(torch.ones(n_batch,1), inputReal)
-   self.gradInputFake = torch.cdiv(torch.ones(n_batch,1), 1 - inputFake)
+   self.gradInputFake = -torch.cdiv(torch.ones(n_batch,1), 1 - inputFake)
 
-   return self.gradInputReal, self.gradInputFake
+   return self.gradInputReal/n_batch, self.gradInputFake/n_batch
 end

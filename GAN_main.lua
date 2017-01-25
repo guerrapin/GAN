@@ -6,6 +6,7 @@ require 'DiscriminatorCriterion'
 require 'GeneratorCriterion'
 
 local utils = require 'utils' -- few external functions
+gnuplot.close()
 
 ---------------------------------------------------------
 ------------- COMMAND OPTIONS ---------------------------
@@ -15,21 +16,23 @@ cmd = torch.CmdLine()
 ------------- Algorithm ------------
 cmd:option('-batch_size',100,"mini-batch size")
 cmd:option('-maxEpoch',10,"number of epochs")
-cmd:option('-learning_rate',1e-5,"learning rate")
+cmd:option('-learning_rate',1e-4,"learning rate")
 cmd:option('-k', 1, "number of discriminator training iteration for one generative training iteration")
 
 ------------- Data -----------------
 cmd:option('-dimension', 2, "dimension of the example data")
 cmd:option('-n_points', 1000, "number of examples")
 cmd:option('-ratio',0.8,"train/total ratio. To split the dataset in train and test sets")
-cmd:option('-mean', 2, "mean of the Gaussian distribution to sample from")
-cmd:option('-var', 0.4, "variance of the Gaussian distribution to sample from")
+cmd:option('-mean', 1, "mean of the Gaussian distribution to sample from")
+cmd:option('-var', 0.1, "variance of the Gaussian distribution to sample from")
 
 ------------ Model -----------------
 cmd:option('-noise_size', 2, "dimension of the noise vector")
 cmd:option('-noise_type', "Gaussian", "either Gaussian or Uniform")
-cmd:option('-generative_size', 120, "dimension of the hidden layers of the generative model")
-cmd:option('-discrim_size', 64, "dimension of the hidden layers of the discriminant model")
+cmd:option('-noise_mean',4 , "mean value for the noise distribution")
+cmd:option('-noise_var', 0.5, "variance for the noise distribution")
+cmd:option('-generative_size', 4, "dimension of the hidden layers of the generative model")
+cmd:option('-discrim_size', 2, "dimension of the hidden layers of the discriminant model")
 
 local opt = cmd:parse(arg)
 print("GAN Implementation with Gaussian distributed data")
@@ -38,9 +41,13 @@ print(opt)
 
 -- Loggers
 dloss_logger = optim.Logger('dloss.log')
+dlogger_fake = optim.Logger('dfake.log')
+dlogger_real = optim.Logger('dreal.log')
 gloss_logger = optim.Logger('gloss.log')
+dlogger_fake:setNames{'Discriminator output on fake data'}
+dlogger_real:setNames{'Discriminator output on real data'}
 gloss_logger:setNames{'Generator Loss'}; dloss_logger:setNames{'Discriminator loss'}
-gloss_logger:style{'+-'}; dloss_logger:style{'+-'}
+gloss_logger:style{'+-'}; dloss_logger:style{'+-'}; dlogger_fake:style{'+-'}; dlogger_real:style{'+-'}
 
 ---------------------------------------------------------
 -------------- DATA GENERATION --------------------------
@@ -58,6 +65,7 @@ end
 -- Split the data in train and test sets
 
 local train_size = torch.floor(opt.n_points*opt.ratio)
+local test_size = opt.n_points - train_size
 
 local xs_train = torch.Tensor(train_size, opt.dimension)
 local xs_test = torch.Tensor(opt.n_points - train_size, opt.dimension)
@@ -97,22 +105,32 @@ local Gen_criterion = GeneratorCriterion()
 -- gnuplot.plot({xs:split(n_points/2,1)[1],'with points ls 2'},{xs:split(n_points/2,1)[2],'with points ls 1'})
 
 
-function Eval()
-   local test_size = xs_test:size()[1]
+function Eval(nb_samples)
+
+
+   local test_data = xs_test:sub(1,nb_samples)
 
    -- compute the mean square error on the test set
    local noise_z
    if opt.noise_type == "Gaussian" then
-      noise_z = torch.randn(test_size, opt.noise_size)
+      noise_z = torch.randn(nb_samples, opt.noise_size)*opt.noise_var + opt.noise_mean
    else
-      noise_z = torch.rand(test_size, opt.noise_size)
+      noise_z = torch.rand(nb_samples, opt.noise_size)*opt.noise_var + opt.noise_mean
    end
 
    local fake_data = Generator:forward(noise_z)
    local fake_decision = Discriminator:forward(fake_data)
-   local real_decision = Discriminator:forward(xs_test)
+   local real_decision = Discriminator:forward(test_data)
 
-   gnuplot.plot({xs_test,"with points ls 1"},{fake_data, "with points ls 2"})
+   --print(torch.mean(fake_data))
+
+   --print(torch.mean(test_data))
+
+   --print(fake_decision)
+
+   --print(real_decision)
+
+   gnuplot.plot({test_data,"with points ls 1"},{fake_data, "with points ls 2"})
 
    --local mean_square_error = torch.sum(torch.pow(fake_decision, 2) + torch.pow(1 - real_decision, 2))
 
@@ -125,7 +143,7 @@ local iterator = 1
 -- loop over the epochs
 for iteration=1,opt.maxEpoch do
 
-   local error = Eval()
+   local error = Eval(test_size)
    --print(error)
 
    if iteration%10 == 0 then
@@ -137,16 +155,16 @@ for iteration=1,opt.maxEpoch do
 
    while next_epoch == false do
 
-
       -- Discriminator optimisation
+
       for step = 1, opt.k do
 
          -- sample minibatch of noise samples from noise prior (Gaussian noise)
          local noise_z
          if opt.noise_type == "Gaussian" then
-            noise_z = torch.randn(opt.batch_size, opt.noise_size)
+            noise_z = torch.randn(opt.batch_size, opt.noise_size)*opt.noise_var + opt.noise_mean
          else
-            noise_z = torch.rand(opt.batch_size, opt.noise_size)
+            noise_z = torch.rand(opt.batch_size, opt.noise_size)*opt.noise_var + opt.noise_mean
          end
 
          -- sample minibatch of examples from data distribution
@@ -170,15 +188,20 @@ for iteration=1,opt.maxEpoch do
          local fake_data = Generator:forward(noise_z)
          local decision_fake = Discriminator:forward(fake_data)
          local decision_real = Discriminator:forward(real_data)
+         dlogger_fake:add{torch.mean(decision_fake)}
+         dlogger_real:add{torch.mean(decision_real)}
 
          local discrim_loss = Discrim_criterion:forward(decision_real, decision_fake)
          dloss_logger:add{discrim_loss}
          local decision_real_delta, decision_fake_delta = Discrim_criterion:backward(decision_real, decision_fake)
 
+         print(decision_real_delta)
+         print(decision_fake_delta)
+
          Discriminator:backward(fake_data, decision_fake_delta)
          Discriminator:backward(real_data, decision_real_delta)
 
-         Discriminator:updateParameters(opt.learning_rate) -- minus because it's a maximisation problem
+         Discriminator:updateParameters(- opt.learning_rate) -- minus because it's a maximisation problem
 
       end
 
@@ -187,9 +210,9 @@ for iteration=1,opt.maxEpoch do
       -- sample minibatch of noise samples from noise prior (Gaussian noise)
       local noise_z
       if opt.noise_type == "Gaussian" then
-         noise_z = torch.randn(opt.batch_size, opt.noise_size)
+         noise_z = torch.randn(opt.batch_size, opt.noise_size)*opt.noise_var + opt.noise_mean
       else
-         noise_z = torch.rand(opt.batch_size, opt.noise_size)
+         noise_z = torch.rand(opt.batch_size, opt.noise_size)*opt.noise_var + opt.noise_mean
       end
 
       Generator:zeroGradParameters()
@@ -207,10 +230,12 @@ for iteration=1,opt.maxEpoch do
 
       Discriminator:zeroGradParameters() -- because we don't want those fake data to be used to update Discriminator parameters
 
-      Generator:updateParameters(opt.learning_rate) -- minus because it's a maximisation problem
+      -- Generator:updateParameters(- opt.learning_rate) -- minus because it's a maximisation problem
    end
 
 end
 
---gloss_logger:plot()
---dloss_logger:plot()
+gloss_logger:plot()
+dloss_logger:plot()
+dlogger_fake:plot()
+dlogger_real:plot()
