@@ -8,42 +8,35 @@ function DiscriminatorCriterion:__init() -- constructeur
    self.output = 0
 end
 
-function DiscriminatorCriterion:forward(inputReal, inputFake)
-   return self:updateOutput(inputReal, inputFake)
+function DiscriminatorCriterion:forward(input)
+   return self:updateOutput(input)
 end
 
 
-function DiscriminatorCriterion:updateOutput(inputReal, inputFake)
-   assert(inputReal:nDimension() == inputFake:nDimension(), 'number of dimensions mismatch')
-   assert(inputReal:nDimension() == 2, 'Datas should be of dimension 2')
+function DiscriminatorCriterion:updateOutput(input)
+   assert(input:nDimension() == 2, 'Datas should be of dimension 2')
 
-   assert(inputReal:size()[1] == inputFake:size()[1], "mini-batch size mismatch")
-   assert(inputReal:size()[2] == inputFake:size()[2], "dimension size mismatch")
-
-   local n_batch = inputReal:size()[1]
+   local batch_size = input:size()[1]/2
    self.output = 0
-   self.output = torch.sum(torch.log(inputReal) + torch.log(1 - inputFake))
+   self.output = torch.sum(torch.log(input:sub(1, batch_size)) + torch.log(1 - input:sub(batch_size+1, 2*batch_size)))
 
-   return self.output/n_batch
+   return self.output/batch_size
 end
 
-function DiscriminatorCriterion:backward(inputReal, inputFake)
-   return self:updateGradInput(inputReal, inputFake)
+function DiscriminatorCriterion:backward(input)
+   return self:updateGradInput(input)
 end
 
-function DiscriminatorCriterion:updateGradInput(inputReal, inputFake)
-   assert(inputReal:nDimension() == inputFake:nDimension(), 'number of dimensions mismatch')
+function DiscriminatorCriterion:updateGradInput(input)
+   assert(input:nDimension() == 2, 'Datas should be of dimension 2')
 
-   assert(inputReal:size()[1] == inputFake:size()[1], "mini-batch size mismatch")
-   assert(inputReal:size()[2] == inputFake:size()[2], "data dimension size mismatch")
+   local batch_size = input:size()[1]/2
 
-   n_batch = inputReal:size()[1]
+   self.gradInputReal = torch.Tensor(batch_size,1)
+   self.gradInputFake = torch.Tensor(batch_size,1)
 
-   self.gradInputReal = torch.Tensor(n_batch,1)
-   self.gradInputFake = torch.Tensor(n_batch,1)
+   self.gradInputReal = torch.cdiv(torch.ones(batch_size,1), input:sub(1,batch_size))
+   self.gradInputFake = -torch.cdiv(torch.ones(batch_size,1), 1 - input:sub(batch_size+1,2*batch_size))
 
-   self.gradInputReal = torch.cdiv(torch.ones(n_batch,1), inputReal)
-   self.gradInputFake = -torch.cdiv(torch.ones(n_batch,1), 1 - inputFake)
-
-   return self.gradInputReal/n_batch, self.gradInputFake/n_batch
+   return torch.cat(self.gradInputReal, self.gradInputFake, 1)
 end

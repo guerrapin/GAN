@@ -6,7 +6,6 @@ require 'DiscriminatorCriterion'
 require 'GeneratorCriterion'
 
 local utils = require 'utils' -- few external functions
-gnuplot.close()
 
 ---------------------------------------------------------
 ------------- COMMAND OPTIONS ---------------------------
@@ -18,6 +17,7 @@ cmd:option('-batch_size',100,"mini-batch size")
 cmd:option('-maxEpoch',10,"number of epochs")
 cmd:option('-learning_rate',1e-4,"learning rate")
 cmd:option('-k', 1, "number of discriminator training iteration for one generative training iteration")
+cmd:option('-seed_value', 1010, "seed value for random generated data")
 
 ------------- Data -----------------
 cmd:option('-dimension', 2, "dimension of the example data")
@@ -31,8 +31,8 @@ cmd:option('-noise_size', 2, "dimension of the noise vector")
 cmd:option('-noise_type', "Gaussian", "either Gaussian or Uniform")
 cmd:option('-noise_mean',4 , "mean value for the noise distribution")
 cmd:option('-noise_var', 0.5, "variance for the noise distribution")
-cmd:option('-generative_size', 4, "dimension of the hidden layers of the generative model")
-cmd:option('-discrim_size', 2, "dimension of the hidden layers of the discriminant model")
+cmd:option('-generative_size', 20, "dimension of the hidden layers of the generative model")
+cmd:option('-discrim_size', 10, "dimension of the hidden layers of the discriminant model")
 
 local opt = cmd:parse(arg)
 print("GAN Implementation with Gaussian distributed data")
@@ -40,14 +40,18 @@ print("Parameters of this experiment :")
 print(opt)
 
 -- Loggers
-dloss_logger = optim.Logger('dloss.log')
-dlogger_fake = optim.Logger('dfake.log')
-dlogger_real = optim.Logger('dreal.log')
-gloss_logger = optim.Logger('gloss.log')
+dloss_logger = optim.Logger('dloss.log') -- loss with the DiscriminatorCriterion
+dlogger_fake = optim.Logger('dfake.log') --  output prediction on fake data
+dlogger_real = optim.Logger('dreal.log') -- output prediction on real data
+gloss_logger = optim.Logger('gloss.log') -- loss with the GeneratorCriterion
+
 dlogger_fake:setNames{'Discriminator output on fake data'}
 dlogger_real:setNames{'Discriminator output on real data'}
 gloss_logger:setNames{'Generator Loss'}; dloss_logger:setNames{'Discriminator loss'}
 gloss_logger:style{'+-'}; dloss_logger:style{'+-'}; dlogger_fake:style{'+-'}; dlogger_real:style{'+-'}
+
+
+torch.manualSeed(opt.seed_value)
 
 ---------------------------------------------------------
 -------------- DATA GENERATION --------------------------
@@ -88,7 +92,7 @@ end
 local Generator = nn.Sequential()
 Generator:add(nn.Linear(opt.noise_size, opt.generative_size)):add(nn.ReLU())
 Generator:add(nn.Linear(opt.generative_size, opt.generative_size)):add(nn.ReLU())
-Generator:add(nn.Linear(opt.generative_size, opt.dimension)):add(nn.Sigmoid())
+Generator:add(nn.Linear(opt.generative_size, opt.dimension)) --:add(nn.Sigmoid())
 
 local Discriminator = nn.Sequential()
 Discriminator:add(nn.Linear(opt.dimension, opt.discrim_size)):add(nn.ReLU())
@@ -102,15 +106,13 @@ local Gen_criterion = GeneratorCriterion()
 -------------- LEARNING AND EVALUATION ------------------
 ---------------------------------------------------------
 
--- gnuplot.plot({xs:split(n_points/2,1)[1],'with points ls 2'},{xs:split(n_points/2,1)[2],'with points ls 1'})
-
-
 function Eval(nb_samples)
-
+   -- nb sample is the number of samples from the test set to consider
 
    local test_data = xs_test:sub(1,nb_samples)
 
-   -- compute the mean square error on the test set
+   -- plot the test data distributions
+
    local noise_z
    if opt.noise_type == "Gaussian" then
       noise_z = torch.randn(nb_samples, opt.noise_size)*opt.noise_var + opt.noise_mean
@@ -122,19 +124,8 @@ function Eval(nb_samples)
    local fake_decision = Discriminator:forward(fake_data)
    local real_decision = Discriminator:forward(test_data)
 
-   --print(torch.mean(fake_data))
-
-   --print(torch.mean(test_data))
-
-   --print(fake_decision)
-
-   --print(real_decision)
-
    gnuplot.plot({test_data,"with points ls 1"},{fake_data, "with points ls 2"})
 
-   --local mean_square_error = torch.sum(torch.pow(fake_decision, 2) + torch.pow(1 - real_decision, 2))
-
-   --return mean_square_error/(2*test_size)
 end
 
 
@@ -185,22 +176,28 @@ for iteration=1,opt.maxEpoch do
          Generator:zeroGradParameters()
          Discriminator:zeroGradParameters()
 
+         -- Generate data from Generator
          local fake_data = Generator:forward(noise_z)
-         local decision_fake = Discriminator:forward(fake_data)
-         local decision_real = Discriminator:forward(real_data)
-         dlogger_fake:add{torch.mean(decision_fake)}
-         dlogger_real:add{torch.mean(decision_real)}
 
-         local discrim_loss = Discrim_criterion:forward(decision_real, decision_fake)
+         -- Concatenate real and fake data
+         local all_data = torch.cat(real_data, fake_data, 1)
+
+         -- Compute Discriminator decision
+         local decision = Discriminator:forward(all_data)
+
+         -- to log decision on real and fake data
+         dlogger_fake:add{torch.mean(decision:sub(opt.batch_size+1,2*opt.batch_size))}
+         dlogger_real:add{torch.mean(decision:sub(1,opt.batch_size))}
+
+         -- compute Loss of Discriminator
+         local discrim_loss = Discrim_criterion:forward(decision)
          dloss_logger:add{discrim_loss}
-         local decision_real_delta, decision_fake_delta = Discrim_criterion:backward(decision_real, decision_fake)
 
-         print(decision_real_delta)
-         print(decision_fake_delta)
+         -- backward deltas on decision then backward on the discriminator
+         local decision_delta = Discrim_criterion:backward(decision)
+         Discriminator:backward(all_data, decision_delta)
 
-         Discriminator:backward(fake_data, decision_fake_delta)
-         Discriminator:backward(real_data, decision_real_delta)
-
+         -- update discriminator 
          Discriminator:updateParameters(- opt.learning_rate) -- minus because it's a maximisation problem
 
       end
@@ -230,12 +227,12 @@ for iteration=1,opt.maxEpoch do
 
       Discriminator:zeroGradParameters() -- because we don't want those fake data to be used to update Discriminator parameters
 
-      -- Generator:updateParameters(- opt.learning_rate) -- minus because it's a maximisation problem
+      Generator:updateParameters(- opt.learning_rate) -- minus because it's a maximisation problem
    end
 
 end
 
 gloss_logger:plot()
 dloss_logger:plot()
-dlogger_fake:plot()
-dlogger_real:plot()
+--dlogger_fake:plot()
+--dlogger_real:plot()
