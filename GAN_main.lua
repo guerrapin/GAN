@@ -13,31 +13,34 @@ local utils = require 'utils' -- few external functions
 
 cmd = torch.CmdLine()
 ------------- Algorithm ------------
-cmd:option('-batch_size',100,"mini-batch size")
-cmd:option('-maxEpoch',10,"number of epochs")
+cmd:option('-batch_size',40,"mini-batch size")
+cmd:option('-maxEpoch',5000,"number of epochs")
 cmd:option('-learning_rate',1e-4,"learning rate")
 cmd:option('-k', 1, "number of discriminator training iteration for one generative training iteration")
 cmd:option('-seed_value', 1010, "seed value for random generated data")
+cmd:option('-lr_decay_start', 1000, "iteration when to start decaying the learning rate (0 = No decay)")
+cmd:option('-lr_decay_every', 500,"every how many iteration thereafter to drop LR by half? ")
 
 ------------- Data -----------------
 cmd:option('-dimension', 2, "dimension of the example data")
 cmd:option('-n_points', 1000, "number of examples")
 cmd:option('-ratio',0.8,"train/total ratio. To split the dataset in train and test sets")
-cmd:option('-mean', 1, "mean of the Gaussian distribution to sample from")
-cmd:option('-var', 0.1, "variance of the Gaussian distribution to sample from")
+cmd:option('-mean', 8, "mean of the Gaussian distribution to sample from")
+cmd:option('-var', 0.5, "variance of the Gaussian distribution to sample from")
 
 ------------ Model -----------------
 cmd:option('-noise_size', 2, "dimension of the noise vector")
 cmd:option('-noise_type', "Gaussian", "either Gaussian or Uniform")
 cmd:option('-noise_mean',4 , "mean value for the noise distribution")
 cmd:option('-noise_var', 0.5, "variance for the noise distribution")
-cmd:option('-generative_size', 20, "dimension of the hidden layers of the generative model")
-cmd:option('-discrim_size', 10, "dimension of the hidden layers of the discriminant model")
+cmd:option('-generative_size', 40, "dimension of the hidden layers of the generative model")
+cmd:option('-discrim_size', 20, "dimension of the hidden layers of the discriminant model")
 
 local opt = cmd:parse(arg)
 print("GAN Implementation with Gaussian distributed data")
 print("Parameters of this experiment :")
 print(opt)
+
 
 -- Loggers
 dloss_logger = optim.Logger('dloss.log') -- loss with the DiscriminatorCriterion
@@ -49,7 +52,6 @@ dlogger_fake:setNames{'Discriminator output on fake data'}
 dlogger_real:setNames{'Discriminator output on real data'}
 gloss_logger:setNames{'Generator Loss'}; dloss_logger:setNames{'Discriminator loss'}
 gloss_logger:style{'+-'}; dloss_logger:style{'+-'}; dlogger_fake:style{'+-'}; dlogger_real:style{'+-'}
-
 
 torch.manualSeed(opt.seed_value)
 
@@ -92,7 +94,7 @@ end
 local Generator = nn.Sequential()
 Generator:add(nn.Linear(opt.noise_size, opt.generative_size)):add(nn.ReLU())
 Generator:add(nn.Linear(opt.generative_size, opt.generative_size)):add(nn.ReLU())
-Generator:add(nn.Linear(opt.generative_size, opt.dimension)) --:add(nn.Sigmoid())
+Generator:add(nn.Linear(opt.generative_size, opt.dimension))
 
 local Discriminator = nn.Sequential()
 Discriminator:add(nn.Linear(opt.dimension, opt.discrim_size)):add(nn.ReLU())
@@ -105,6 +107,10 @@ local Gen_criterion = GeneratorCriterion()
 ---------------------------------------------------------
 -------------- LEARNING AND EVALUATION ------------------
 ---------------------------------------------------------
+
+-- set axis
+gnuplot.axis({0,10,0,10})
+
 
 function Eval(nb_samples)
    -- nb sample is the number of samples from the test set to consider
@@ -134,11 +140,19 @@ local iterator = 1
 -- loop over the epochs
 for iteration=1,opt.maxEpoch do
 
-   local error = Eval(test_size)
-   --print(error)
+   --Eval(test_size)
 
-   if iteration%10 == 0 then
+   -- displaying stuff
+   if iteration%100 == 0 then
       print("Achievement : " .. iteration/opt.maxEpoch*100 .. "%")
+      Eval(test_size)
+   end
+
+   -- learning rate decay stuff
+   if iteration > opt.lr_decay_start and opt.lr_decay_start >= 0 then
+      if iteration % opt.lr_decay_every == 0 then
+         opt.learning_rate = opt.learning_rate * 0.5
+      end
    end
 
    local next_epoch = false
@@ -197,7 +211,7 @@ for iteration=1,opt.maxEpoch do
          local decision_delta = Discrim_criterion:backward(decision)
          Discriminator:backward(all_data, decision_delta)
 
-         -- update discriminator 
+         -- update discriminator
          Discriminator:updateParameters(- opt.learning_rate) -- minus because it's a maximisation problem
 
       end
@@ -227,12 +241,13 @@ for iteration=1,opt.maxEpoch do
 
       Discriminator:zeroGradParameters() -- because we don't want those fake data to be used to update Discriminator parameters
 
+      -- update generator
       Generator:updateParameters(- opt.learning_rate) -- minus because it's a maximisation problem
    end
 
 end
 
-gloss_logger:plot()
-dloss_logger:plot()
---dlogger_fake:plot()
---dlogger_real:plot()
+--gloss_logger:plot()
+--dloss_logger:plot()
+dlogger_fake:plot()
+dlogger_real:plot()
