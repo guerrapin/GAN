@@ -5,7 +5,7 @@ require 'optim'
 require 'DiscriminatorCriterion'
 require 'GeneratorCriterion'
 
-local utils = require 'utils' -- few external functions
+require 'utils'
 
 ---------------------------------------------------------
 ------------- COMMAND OPTIONS ---------------------------
@@ -24,8 +24,8 @@ cmd:option('-plot', true, "plot or not the data point while training")
 
 ------------- Data -----------------
 cmd:option('-dimension', 2, "dimension of the example data")
-cmd:option('-n_points', 1000, "number of examples")
-cmd:option('-ratio',0.9,"train/total ratio. To split the dataset in train and test sets")
+cmd:option('-n_points', 3000, "number of examples")
+cmd:option('-ratio',0.7,"train/total ratio. To split the dataset in train and test sets")
 cmd:option('-mean', 8, "mean of the Gaussian distribution to sample from")
 cmd:option('-var', 0.5, "variance of the Gaussian distribution to sample from")
 
@@ -109,9 +109,6 @@ local Gen_criterion = GeneratorCriterion()
 -------------- LEARNING AND EVALUATION ------------------
 ---------------------------------------------------------
 
--- set axis
-gnuplot.axis({0,10,0,10})
-
 function Eval(iteration)
    -- to log losses and decisions and display distributions
 
@@ -146,8 +143,27 @@ function Eval(iteration)
    -- displaying stuff
    if iteration%100 == 0 then
       print("Achievement : " .. iteration/opt.maxEpoch*100 .. "%")
+   end
+   if iteration%10 == 0 then
+      -- 2 dimensions display
       if opt.dimension == 2 and opt.plot == true then
+         -- set axis
+         gnuplot.axis({0,2*opt.mean,0,2*opt.mean})
+         -- display distributions
          gnuplot.plot({xs_test,"with points ls 1"},{fake_data, "with points ls 2"})
+
+      -- 1 D display
+      elseif opt.dimension == 1 and opt.plot == true then
+         -- set axis
+         gnuplot.axis({0,2*opt.mean,0,0.2})
+
+         local n_pts = 200
+         local display_decision=torch.Tensor(n_pts,2)
+         for i=1,n_pts do
+            display_decision[i][1]=0+(2*opt.mean-0)/n_pts*(i-1)
+            display_decision[i][2]=Discriminator:forward(torch.Tensor(1):fill(display_decision[i][1]))/10
+         end
+         gnuplot.plot({histogram(xs_test,25),'-'},{histogram(fake_data,25),'-'},{display_decision,'-'})
       end
    end
 end
