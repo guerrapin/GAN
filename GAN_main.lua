@@ -20,11 +20,12 @@ cmd:option('-k', 1, "number of discriminator training iteration for one generati
 cmd:option('-seed_value', 1010, "seed value for random generated data")
 cmd:option('-lr_decay_start', 1000, "iteration when to start decaying the learning rate (0 = No decay)")
 cmd:option('-lr_decay_every', 500,"every how many iteration thereafter to drop LR by half? ")
+cmd:option('-plot', true, "plot or not the data point while training")
 
 ------------- Data -----------------
 cmd:option('-dimension', 2, "dimension of the example data")
 cmd:option('-n_points', 1000, "number of examples")
-cmd:option('-ratio',0.8,"train/total ratio. To split the dataset in train and test sets")
+cmd:option('-ratio',0.9,"train/total ratio. To split the dataset in train and test sets")
 cmd:option('-mean', 8, "mean of the Gaussian distribution to sample from")
 cmd:option('-var', 0.5, "variance of the Gaussian distribution to sample from")
 
@@ -111,27 +112,44 @@ local Gen_criterion = GeneratorCriterion()
 -- set axis
 gnuplot.axis({0,10,0,10})
 
+function Eval(iteration)
+   -- to log losses and decisions and display distributions
 
-function Eval(nb_samples)
-   -- nb sample is the number of samples from the test set to consider
-
-   local test_data = xs_test:sub(1,nb_samples)
-
-   -- plot the test data distributions
-
-   local noise_z
+   -- test noise creation
+   local test_noise_z
    if opt.noise_type == "Gaussian" then
-      noise_z = torch.randn(nb_samples, opt.noise_size)*opt.noise_var + opt.noise_mean
+      test_noise_z = torch.randn(test_size, opt.noise_size)*opt.noise_var + opt.noise_mean
    else
-      noise_z = torch.rand(nb_samples, opt.noise_size)*opt.noise_var + opt.noise_mean
+      test_noise_z = torch.rand(test_size, opt.noise_size)*opt.noise_var + opt.noise_mean
    end
 
-   local fake_data = Generator:forward(noise_z)
-   local fake_decision = Discriminator:forward(fake_data)
-   local real_decision = Discriminator:forward(test_data)
+   -- generate data according to Pg
+   local fake_data = Generator:forward(test_noise_z)
 
-   gnuplot.plot({test_data,"with points ls 1"},{fake_data, "with points ls 2"})
+   -- Concatenate real and fake data
+   local all_data = torch.cat(xs_test, fake_data, 1)
 
+   -- Compute Discriminator decision
+   local decision = Discriminator:forward(all_data)
+
+   -- to log decision on real and fake data
+   dlogger_fake:add{torch.mean(decision:sub(test_size+1,2*test_size))}
+   dlogger_real:add{torch.mean(decision:sub(1,test_size))}
+
+   -- compute Loss of Discriminator
+   local discrim_loss = Discrim_criterion:forward(decision)
+   dloss_logger:add{discrim_loss}
+
+   local gen_loss = Gen_criterion:forward(decision:sub(test_size+1, 2*test_size))
+   gloss_logger:add{gen_loss}
+
+   -- displaying stuff
+   if iteration%100 == 0 then
+      print("Achievement : " .. iteration/opt.maxEpoch*100 .. "%")
+      if opt.dimension == 2 and opt.plot == true then
+         gnuplot.plot({xs_test,"with points ls 1"},{fake_data, "with points ls 2"})
+      end
+   end
 end
 
 
@@ -140,13 +158,8 @@ local iterator = 1
 -- loop over the epochs
 for iteration=1,opt.maxEpoch do
 
-   --Eval(test_size)
-
    -- displaying stuff
-   if iteration%100 == 0 then
-      print("Achievement : " .. iteration/opt.maxEpoch*100 .. "%")
-      Eval(test_size)
-   end
+   Eval(iteration)
 
    -- learning rate decay stuff
    if iteration > opt.lr_decay_start and opt.lr_decay_start >= 0 then
@@ -200,12 +213,12 @@ for iteration=1,opt.maxEpoch do
          local decision = Discriminator:forward(all_data)
 
          -- to log decision on real and fake data
-         dlogger_fake:add{torch.mean(decision:sub(opt.batch_size+1,2*opt.batch_size))}
-         dlogger_real:add{torch.mean(decision:sub(1,opt.batch_size))}
+         -- dlogger_fake:add{torch.mean(decision:sub(opt.batch_size+1,2*opt.batch_size))}
+         -- dlogger_real:add{torch.mean(decision:sub(1,opt.batch_size))}
 
          -- compute Loss of Discriminator
-         local discrim_loss = Discrim_criterion:forward(decision)
-         dloss_logger:add{discrim_loss}
+         -- local discrim_loss = Discrim_criterion:forward(decision)
+         -- dloss_logger:add{discrim_loss}
 
          -- backward deltas on decision then backward on the discriminator
          local decision_delta = Discrim_criterion:backward(decision)
@@ -226,17 +239,22 @@ for iteration=1,opt.maxEpoch do
          noise_z = torch.rand(opt.batch_size, opt.noise_size)*opt.noise_var + opt.noise_mean
       end
 
+      -- to be sure that accumulated gradients are deleted
       Generator:zeroGradParameters()
       Discriminator:zeroGradParameters()
 
+      -- forward generator and discriminator
       local fake_data = Generator:forward(noise_z)
       local decision_fake = Discriminator:forward(fake_data)
 
-      local gen_loss = Gen_criterion:forward(decision_fake)
-      gloss_logger:add{gen_loss}
-      local decision_fake_delta = Gen_criterion:backward(decision_fake)
+      -- local gen_loss = Gen_criterion:forward(decision_fake)
+      -- gloss_logger:add{gen_loss}
 
+      -- compute signals of generator ouput
+      local decision_fake_delta = Gen_criterion:backward(decision_fake)
       local fake_data_delta = Discriminator:backward(fake_data, decision_fake_delta)
+
+      -- compute gradients of generator parameters
       Generator:backward(noise_z, fake_data_delta)
 
       Discriminator:zeroGradParameters() -- because we don't want those fake data to be used to update Discriminator parameters
@@ -247,7 +265,7 @@ for iteration=1,opt.maxEpoch do
 
 end
 
---gloss_logger:plot()
---dloss_logger:plot()
-dlogger_fake:plot()
-dlogger_real:plot()
+gloss_logger:plot()
+dloss_logger:plot()
+--dlogger_fake:plot()
+--dlogger_real:plot()
