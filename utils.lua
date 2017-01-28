@@ -1,30 +1,31 @@
 require 'torch'
 
-local utils = {}
 
-function utils.subrange(t, first, last)
-  local sub = {}
-  for i=first,last do
-    sub[#sub + 1] = t[i]
-  end
-  return sub
-end
+function histogram(data, n_interval)
 
+   mean = torch.mean(data)
+   var = torch.var(data)
+   data_size = data:size()[1]
 
-function utils.TableConcat(t1,t2)
-   for i=1,#t2 do
-      t1[#t1+1] = t2[i]
+   min = torch.min(data)
+   max = torch.max(data)
+
+   hist = torch.zeros(n_interval,2)
+   for i = 1,n_interval do
+      hist[i][1] = min + (max-min)/n_interval*(i-1)
    end
-   return t1
+
+   for i = 1 , data_size do
+      not_found = true
+      iterator =n_interval
+      while not_found do
+         if data[i][1] >= hist[iterator][1] then
+            not_found = false
+            hist[iterator][2] = hist[iterator][2]+1/data_size
+         else
+            iterator = iterator - 1
+         end
+      end
+   end
+   return hist
 end
-
-function utils.accuracy(y, out)
-   -- return the accuracy of the prediction "out" compared to the label "y" (i.e. a value between 0 and 1)
-
-   accuracy_value = torch.mean(torch.eq(torch.sign(out),y):double())
-
-   return accuracy_value
-
-end
-
-return utils

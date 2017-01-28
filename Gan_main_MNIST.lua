@@ -5,6 +5,9 @@ require 'optim'
 require 'DiscriminatorCriterion'
 require 'GeneratorCriterion'
 
+require 'utils'
+require 'csvigo'
+
 ---------------------------------------------------------
 ------------- COMMAND OPTIONS ---------------------------
 ---------------------------------------------------------
@@ -12,28 +15,26 @@ require 'GeneratorCriterion'
 cmd = torch.CmdLine()
 ------------- Algorithm ------------
 cmd:option('-batch_size',40,"mini-batch size")
-cmd:option('-maxEpoch',2000,"number of epochs")
+cmd:option('-maxEpoch',5000,"number of epochs")
 cmd:option('-learning_rate',1e-4,"learning rate")
 cmd:option('-k', 1, "number of discriminator training iteration for one generative training iteration")
 cmd:option('-seed_value', 1010, "seed value for random generated data")
-cmd:option('-lr_decay_start', 1000, "iteration when to start decaying the learning rate (0 = No decay)")
+cmd:option('-lr_decay_start', 500, "iteration when to start decaying the learning rate (0 = No decay)")
 cmd:option('-lr_decay_every', 100,"every how many iteration thereafter to drop LR by half? ")
 cmd:option('-plot', true, "plot or not the data point while training")
-
-------------- Data -----------------
-cmd:option('-dimension', 2, "dimension of the example data")
-cmd:option('-n_points', 3000, "number of examples")
-cmd:option('-ratio',0.7,"train/total ratio. To split the dataset in train and test sets")
-cmd:option('-mean', 8, "mean of the Gaussian distribution to sample from")
-cmd:option('-var', 0.5, "variance of the Gaussian distribution to sample from")
+cmd:option('-ratio', 0.8, "train_data/all_data ratio")
 
 ------------ Model -----------------
-cmd:option('-noise_size', 10, "dimension of the noise vector")
+cmd:option('-noise_size', 100, "dimension of the noise vector")
 cmd:option('-noise_type', "Gaussian", "either Gaussian or Uniform")
 cmd:option('-noise_mean',4 , "mean value for the noise distribution")
 cmd:option('-noise_var', 0.5, "variance for the noise distribution")
-cmd:option('-generative_size', 40, "dimension of the hidden layers of the generative model")
-cmd:option('-discrim_size', 20, "dimension of the hidden layers of the discriminant model")
+cmd:option('-generative_size', 500, "dimension of the hidden layers of the generative model")
+cmd:option('-discrim_size', 200, "dimension of the hidden layers of the discriminant model")
+
+------------ Data ------------------
+cmd:option('-mnist_size',"big","either big (28x28) or small (8x8)")
+--cmd:option('-mnist_label',8,"label of the images to consider, 10 if all labels")
 
 local opt = cmd:parse(arg)
 print("GAN Implementation with Gaussian distributed data")
@@ -58,29 +59,79 @@ torch.manualSeed(opt.seed_value)
 -------------- DATA GENERATION --------------------------
 ---------------------------------------------------------
 
--- Gaussian sampling
 
-local mean = torch.Tensor(opt.dimension):fill(opt.mean)
-local xs = torch.Tensor(opt.n_points, opt.dimension)
+if opt.mnist_size == "big" then
+   local mnist = require 'mnist'
+   local train = mnist.traindataset()
+   local test = mnist.testdataset()
 
-for i = 1, opt.n_points do
-   xs[i]:copy(torch.randn(opt.dimension)*opt.var + mean)
+   xs_train = torch.Tensor(5851,28*28)
+   xs_test = torch.Tensor(974,28*28)
+
+   iterator = 1
+   for i = 1, train.data:size(1) do
+      if train.label[i] == 8 then
+         xs_train[iterator] = torch.reshape(train.data[i],28*28):double()
+         iterator = iterator +1
+      end
+   end
+   iterator = 1
+   for i = 1, test.data:size(1) do
+      if test.label[i] == 8 then
+         xs_test[iterator] = torch.reshape(test.data[i],28*28):double()
+         iterator = iterator +1
+      end
+   end
+
+   --local xs_train = torch.div(torch.reshape(train.data,6000,28*28):double(),torch.max(train.data))
+   --local xs_test = torch.div(torch.reshape(test.data,1000,28*28):double(),torch.max(train.data))
+
+   dimension = xs_train:size(2)
+   train_size = xs_train:size(1)
+   test_size = xs_test:size(1)
+
+else
+   data_table = csvigo.load({path = "mnist_8x8_8.csv", mode = "large"})
+
+   dimension = #data_table[1]
+   train_size = torch.floor(#data_table*opt.ratio)
+   test_size = #data_table - train_size
+
+   xs_train = torch.Tensor(train_size, dimension)
+   xs_test = torch.Tensor(test_size, dimension)
+
+   for i =1,#data_table do
+      for j = 1, dimension do
+         if i<=train_size then
+            xs_train[i][j] = data_table[i][j]
+         else
+            xs_test[i-train_size][j] = data_table[i][j]
+         end
+      end
+   end
 end
 
--- Split the data in train and test sets
+-- Normalisation of the pixel points
+-- (données centrées réduites)
 
-local train_size = torch.floor(opt.n_points*opt.ratio)
-local test_size = opt.n_points - train_size
+data_var = torch.var(xs_train,1)
+data_mean = torch.mean(xs_train,1)
 
-local xs_train = torch.Tensor(train_size, opt.dimension)
-local xs_test = torch.Tensor(opt.n_points - train_size, opt.dimension)
+for i = 1,train_size do
+   for j = 1, dimension do
+      xs_train[i][j] = xs_train[i][j] - data_mean[1][j]
+      --if data_var[1][j] ~= 0 then
+      --   xs_train[i][j] = xs_train[i][j]/data_var[1][j]
+      --end
+   end
+end
 
-for i = 1, opt.n_points do
-   if i <= train_size then
-      xs_train[i]:copy(xs[i])
-   else
-      local idx_test = i-train_size
-      xs_test[idx_test]:copy(xs[i])
+for i = 1,test_size do
+   for j = 1, dimension do
+      xs_test[i][j] = xs_test[i][j] - data_mean[1][j]
+      --if data_var[1][j] ~= 0 then
+      --   xs_test[i][j] = xs_test[i][j]/data_var[1][j]
+      --end
    end
 end
 
@@ -92,12 +143,12 @@ end
 
 local Generator = nn.Sequential()
 Generator:add(nn.Linear(opt.noise_size, opt.generative_size)):add(nn.ReLU())
---Generator:add(nn.Linear(opt.generative_size, opt.generative_size)):add(nn.ReLU())
-Generator:add(nn.Linear(opt.generative_size, opt.dimension))
+Generator:add(nn.Linear(opt.generative_size, opt.generative_size)):add(nn.ReLU())
+Generator:add(nn.Linear(opt.generative_size, dimension))
 
 local Discriminator = nn.Sequential()
-Discriminator:add(nn.Linear(opt.dimension, opt.discrim_size)):add(nn.ReLU())
---Discriminator:add(nn.Linear(opt.discrim_size, opt.discrim_size)):add(nn.ReLU())
+Discriminator:add(nn.Linear(dimension, opt.discrim_size)):add(nn.ReLU())
+Discriminator:add(nn.Linear(opt.discrim_size, opt.discrim_size)):add(nn.ReLU())
 Discriminator:add(nn.Linear(opt.discrim_size, 1)):add(nn.Sigmoid())
 
 local Discrim_criterion = DiscriminatorCriterion()
@@ -143,28 +194,18 @@ function Eval(iteration)
       print("Achievement : " .. iteration/opt.maxEpoch*100 .. "%")
    end
 
-   if iteration%10 == 0 then
-      -- 2 dimensions display
-      if opt.dimension == 2 and opt.plot == true then
-
-         -- set axis
-         gnuplot.axis({0,2*opt.mean,0,2*opt.mean})
-         -- display distributions
-         gnuplot.plot({xs_test,"with points ls 1"},{fake_data, "with points ls 2"})
-
-      -- 1 D display
-      elseif opt.dimension == 1 and opt.plot == true then
-
-         -- set axis
-         gnuplot.axis({-5,opt.mean*2,0,0.15})
-
-         local n_pts = 200
-         local display_decision=torch.Tensor(n_pts,2)
-         for i=1,n_pts do
-            display_decision[i][1]=0+(2*opt.mean-0)/n_pts*(i-1)
-            display_decision[i][2]=Discriminator:forward(torch.Tensor(1):fill(display_decision[i][1]))/10
-         end
-         gnuplot.plot({histogram(xs_test,25),'-'},{histogram(fake_data,25),'-'},{display_decision,'-'})
+   if iteration%1 == 0 then
+      data_display = fake_data[1]
+      for m = 1, dimension do
+         --if data_var[1][m] ~=0 then
+         --   data_display[m] = data_display[m]*data_var[1][m]
+         --end
+         data_display[m] = data_display[m] + data_mean[1][m]
+      end
+      if opt.mnist_size == "big" then
+         gnuplot.imagesc(torch.reshape(data_display, 28,28))
+      else
+         gnuplot.imagesc(torch.reshape(data_display, 8,8))
       end
    end
 end
@@ -203,7 +244,7 @@ for iteration=1,opt.maxEpoch do
          end
 
          -- sample minibatch of examples from data distribution
-         local real_data = torch.Tensor(opt.batch_size, opt.dimension)
+         local real_data = torch.Tensor(opt.batch_size, dimension)
          for index = 1,opt.batch_size do
 
             real_data[index] = xs_train[shuffle[iterator]]
@@ -228,6 +269,14 @@ for iteration=1,opt.maxEpoch do
 
          -- Compute Discriminator decision
          local decision = Discriminator:forward(all_data)
+
+         -- to log decision on real and fake data
+         -- dlogger_fake:add{torch.mean(decision:sub(opt.batch_size+1,2*opt.batch_size))}
+         -- dlogger_real:add{torch.mean(decision:sub(1,opt.batch_size))}
+
+         -- compute Loss of Discriminator
+         -- local discrim_loss = Discrim_criterion:forward(decision)
+         -- dloss_logger:add{discrim_loss}
 
          -- backward deltas on decision then backward on the discriminator
          local decision_delta = Discrim_criterion:backward(decision)
@@ -256,6 +305,9 @@ for iteration=1,opt.maxEpoch do
       local fake_data = Generator:forward(noise_z)
       local decision_fake = Discriminator:forward(fake_data)
 
+      -- local gen_loss = Gen_criterion:forward(decision_fake)
+      -- gloss_logger:add{gen_loss}
+
       -- compute signals of generator ouput
       local decision_fake_delta = Gen_criterion:backward(decision_fake)
       local fake_data_delta = Discriminator:backward(fake_data, decision_fake_delta)
@@ -273,5 +325,5 @@ end
 
 gloss_logger:plot()
 dloss_logger:plot()
---dlogger_fake:plot()
---dlogger_real:plot()
+dlogger_fake:plot()
+dlogger_real:plot()
