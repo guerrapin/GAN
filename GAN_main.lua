@@ -4,6 +4,7 @@ require 'optim'
 
 require 'DiscriminatorCriterion'
 require 'GeneratorCriterion'
+require 'histogram'
 
 ---------------------------------------------------------
 ------------- COMMAND OPTIONS ---------------------------
@@ -149,6 +150,7 @@ function Eval(iteration)
 
          -- set axis
          gnuplot.axis({0,2*opt.mean,0,2*opt.mean})
+
          -- display distributions
          gnuplot.plot({xs_test,"with points ls 1"},{fake_data, "with points ls 2"})
 
@@ -179,7 +181,7 @@ for iteration=1,opt.maxEpoch do
    Eval(iteration)
 
    -- learning rate decay stuff
-   if iteration > opt.lr_decay_start and opt.lr_decay_start >= 0 then
+   if iteration >= opt.lr_decay_start and opt.lr_decay_start > 0 then
       if iteration % opt.lr_decay_every == 0 then
          opt.learning_rate = opt.learning_rate * 0.5
       end
@@ -273,5 +275,5 @@ end
 
 gloss_logger:plot()
 dloss_logger:plot()
---dlogger_fake:plot()
---dlogger_real:plot()
+dlogger_fake:plot()
+dlogger_real:plot()

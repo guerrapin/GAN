@@ -5,8 +5,8 @@ require 'optim'
 require 'DiscriminatorCriterion'
 require 'GeneratorCriterion'
 
-require 'utils'
 require 'csvigo'
+require 'adam'
 
 ---------------------------------------------------------
 ------------- COMMAND OPTIONS ---------------------------
@@ -15,11 +15,11 @@ require 'csvigo'
 cmd = torch.CmdLine()
 ------------- Algorithm ------------
 cmd:option('-batch_size',40,"mini-batch size")
-cmd:option('-maxEpoch',5000,"number of epochs")
+cmd:option('-maxEpoch',1000,"number of epochs")
 cmd:option('-learning_rate',1e-4,"learning rate")
 cmd:option('-k', 1, "number of discriminator training iteration for one generative training iteration")
 cmd:option('-seed_value', 1010, "seed value for random generated data")
-cmd:option('-lr_decay_start', 500, "iteration when to start decaying the learning rate (0 = No decay)")
+cmd:option('-lr_decay_start', 100, "iteration when to start decaying the learning rate (0 = No decay)")
 cmd:option('-lr_decay_every', 100,"every how many iteration thereafter to drop LR by half? ")
 cmd:option('-plot', true, "plot or not the data point while training")
 cmd:option('-ratio', 0.8, "train_data/all_data ratio")
@@ -68,6 +68,7 @@ if opt.mnist_size == "big" then
    xs_train = torch.Tensor(5851,28*28)
    xs_test = torch.Tensor(974,28*28)
 
+   -- to select only digits with label = 8
    iterator = 1
    for i = 1, train.data:size(1) do
       if train.label[i] == 8 then
@@ -83,6 +84,8 @@ if opt.mnist_size == "big" then
       end
    end
 
+
+   -- to select all the data
    --local xs_train = torch.div(torch.reshape(train.data,6000,28*28):double(),torch.max(train.data))
    --local xs_test = torch.div(torch.reshape(test.data,1000,28*28):double(),torch.max(train.data))
 
@@ -91,7 +94,9 @@ if opt.mnist_size == "big" then
    test_size = xs_test:size(1)
 
 else
-   data_table = csvigo.load({path = "mnist_8x8_8.csv", mode = "large"})
+   -- play around with mini-mnist 8x8
+
+   data_table = csvigo.load({path = "mnist_8x8.csv", mode = "large"})
 
    dimension = #data_table[1]
    train_size = torch.floor(#data_table*opt.ratio)
@@ -111,29 +116,9 @@ else
    end
 end
 
--- Normalisation of the pixel points
--- (données centrées réduites)
-
-data_var = torch.var(xs_train,1)
-data_mean = torch.mean(xs_train,1)
-
-for i = 1,train_size do
-   for j = 1, dimension do
-      xs_train[i][j] = xs_train[i][j] - data_mean[1][j]
-      --if data_var[1][j] ~= 0 then
-      --   xs_train[i][j] = xs_train[i][j]/data_var[1][j]
-      --end
-   end
-end
-
-for i = 1,test_size do
-   for j = 1, dimension do
-      xs_test[i][j] = xs_test[i][j] - data_mean[1][j]
-      --if data_var[1][j] ~= 0 then
-      --   xs_test[i][j] = xs_test[i][j]/data_var[1][j]
-      --end
-   end
-end
+-- normalisation between -1 and 1
+xs_train = torch.add(torch.mul(torch.div(xs_train, 255), 2), -1)
+xs_test = torch.add(torch.mul(torch.div(xs_test, 255), 2), -1)
 
 ----------------------------------------------------
 -------------- MODEL CONSTRUCTION ------------------
@@ -143,12 +128,15 @@ end
 
 local Generator = nn.Sequential()
 Generator:add(nn.Linear(opt.noise_size, opt.generative_size)):add(nn.ReLU())
-Generator:add(nn.Linear(opt.generative_size, opt.generative_size)):add(nn.ReLU())
-Generator:add(nn.Linear(opt.generative_size, dimension))
+--Generator:add(nn.Linear(opt.generative_size, opt.generative_size)):add(nn.ReLU())
+Generator:add(nn.Linear(opt.generative_size, dimension)):add(nn.Tanh())
+
+-- in case we want to use fancy optimisation (adam)
+local gen_params, gen_grad_params = Generator:getParameters()
 
 local Discriminator = nn.Sequential()
 Discriminator:add(nn.Linear(dimension, opt.discrim_size)):add(nn.ReLU())
-Discriminator:add(nn.Linear(opt.discrim_size, opt.discrim_size)):add(nn.ReLU())
+--Discriminator:add(nn.Linear(opt.discrim_size, opt.discrim_size)):add(nn.LeakyReLU())
 Discriminator:add(nn.Linear(opt.discrim_size, 1)):add(nn.Sigmoid())
 
 local Discrim_criterion = DiscriminatorCriterion()
@@ -185,25 +173,24 @@ function Eval(iteration)
    -- compute Loss of Discriminator
    local discrim_loss = Discrim_criterion:forward(decision)
    dloss_logger:add{discrim_loss}
+   --dloss_logger:plot()
 
    local gen_loss = Gen_criterion:forward(decision:sub(test_size+1, 2*test_size))
    gloss_logger:add{gen_loss}
+   --gloss_logger:plot()
 
    -- displaying stuff
    if iteration%100 == 0 then
       print("Achievement : " .. iteration/opt.maxEpoch*100 .. "%")
    end
 
-   if iteration%1 == 0 then
-      data_display = fake_data[1]
-      for m = 1, dimension do
-         --if data_var[1][m] ~=0 then
-         --   data_display[m] = data_display[m]*data_var[1][m]
-         --end
-         data_display[m] = data_display[m] + data_mean[1][m]
-      end
+   if iteration%10 == 0 then
+      data_display = fake_data[10]
+      data_display = torch.mul(torch.div(torch.add(data_display, 1), 2), 255)
+
       if opt.mnist_size == "big" then
          gnuplot.imagesc(torch.reshape(data_display, 28,28))
+         print(iteration)
       else
          gnuplot.imagesc(torch.reshape(data_display, 8,8))
       end
@@ -212,6 +199,7 @@ end
 
 
 local iterator = 1
+local optim_state = {}
 
 -- loop over the epochs
 for iteration=1,opt.maxEpoch do
@@ -270,14 +258,6 @@ for iteration=1,opt.maxEpoch do
          -- Compute Discriminator decision
          local decision = Discriminator:forward(all_data)
 
-         -- to log decision on real and fake data
-         -- dlogger_fake:add{torch.mean(decision:sub(opt.batch_size+1,2*opt.batch_size))}
-         -- dlogger_real:add{torch.mean(decision:sub(1,opt.batch_size))}
-
-         -- compute Loss of Discriminator
-         -- local discrim_loss = Discrim_criterion:forward(decision)
-         -- dloss_logger:add{discrim_loss}
-
          -- backward deltas on decision then backward on the discriminator
          local decision_delta = Discrim_criterion:backward(decision)
          Discriminator:backward(all_data, decision_delta)
@@ -305,9 +285,6 @@ for iteration=1,opt.maxEpoch do
       local fake_data = Generator:forward(noise_z)
       local decision_fake = Discriminator:forward(fake_data)
 
-      -- local gen_loss = Gen_criterion:forward(decision_fake)
-      -- gloss_logger:add{gen_loss}
-
       -- compute signals of generator ouput
       local decision_fake_delta = Gen_criterion:backward(decision_fake)
       local fake_data_delta = Discriminator:backward(fake_data, decision_fake_delta)
@@ -317,8 +294,10 @@ for iteration=1,opt.maxEpoch do
 
       Discriminator:zeroGradParameters() -- because we don't want those fake data to be used to update Discriminator parameters
 
-      -- update generator
-      Generator:updateParameters(- opt.learning_rate) -- minus because it's a maximisation problem
+      -- update generator (either SGD or ADAM)
+
+      --Generator:updateParameters(- opt.learning_rate) -- minus because it's a maximisation problem
+      adam(gen_params, gen_grad_params, -opt.learning_rate, 0.9, 0.999, 1e-8, optim_state)
    end
 
 end
